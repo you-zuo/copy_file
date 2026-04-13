@@ -22,6 +22,8 @@ class CopyTask {
     required this.name,
     required this.sourceDir,
     required this.targetDir,
+    required this.sourceBookmark,
+    required this.targetBookmark,
     required this.status,
     required this.scanCompleted,
     required this.totalFiles,
@@ -39,6 +41,8 @@ class CopyTask {
   final String name;
   final String sourceDir;
   final String targetDir;
+  final String? sourceBookmark;
+  final String? targetBookmark;
   final CopyTaskStatus status;
   final bool scanCompleted;
   final int totalFiles;
@@ -72,6 +76,8 @@ class CopyTask {
       name: map['name']! as String,
       sourceDir: map['source_dir']! as String,
       targetDir: map['target_dir']! as String,
+      sourceBookmark: map['source_bookmark'] as String?,
+      targetBookmark: map['target_bookmark'] as String?,
       status: copyTaskStatusFromDb(map['status']! as String),
       scanCompleted: (map['scan_completed']! as int) == 1,
       totalFiles: map['total_files']! as int,

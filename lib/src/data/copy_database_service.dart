@@ -15,7 +15,7 @@ class CopyDatabaseService {
     _database = await databaseFactory.openDatabase(
       p.normalize(databasePath),
       options: OpenDatabaseOptions(
-        version: 1,
+        version: 2,
         onConfigure: (db) async {
           await db.execute('PRAGMA foreign_keys = ON');
           await db.execute('PRAGMA journal_mode = WAL');
@@ -30,6 +30,8 @@ class CopyDatabaseService {
               name TEXT NOT NULL,
               source_dir TEXT NOT NULL,
               target_dir TEXT NOT NULL,
+              source_bookmark TEXT,
+              target_bookmark TEXT,
               status TEXT NOT NULL,
               scan_completed INTEGER NOT NULL DEFAULT 0,
               total_files INTEGER NOT NULL DEFAULT 0,
@@ -77,6 +79,16 @@ class CopyDatabaseService {
           await db.execute(
             'CREATE INDEX idx_copy_entries_task_updated ON copy_entries(task_id, updated_at DESC)',
           );
+        },
+        onUpgrade: (db, oldVersion, newVersion) async {
+          if (oldVersion < 2) {
+            await db.execute(
+              'ALTER TABLE copy_tasks ADD COLUMN source_bookmark TEXT',
+            );
+            await db.execute(
+              'ALTER TABLE copy_tasks ADD COLUMN target_bookmark TEXT',
+            );
+          }
         },
       ),
     );

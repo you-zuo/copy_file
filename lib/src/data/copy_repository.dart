@@ -105,6 +105,8 @@ class CopyRepository {
     required String name,
     required String sourceDir,
     required String targetDir,
+    String? sourceBookmark,
+    String? targetBookmark,
   }) async {
     final db = await _db;
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -112,6 +114,8 @@ class CopyRepository {
       'name': name,
       'source_dir': sourceDir,
       'target_dir': targetDir,
+      'source_bookmark': sourceBookmark,
+      'target_bookmark': targetBookmark,
       'status': CopyTaskStatus.queued.name,
       'scan_completed': 0,
       'total_files': 0,
@@ -125,6 +129,25 @@ class CopyRepository {
     });
     _notify(id);
     return id;
+  }
+
+  Future<void> updateTaskBookmarks({
+    required int taskId,
+    String? sourceBookmark,
+    String? targetBookmark,
+  }) async {
+    final db = await _db;
+    await db.update(
+      'copy_tasks',
+      {
+        'source_bookmark': sourceBookmark,
+        'target_bookmark': targetBookmark,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'id = ?',
+      whereArgs: [taskId],
+    );
+    _notify(taskId);
   }
 
   Future<void> deleteTask(int taskId) async {

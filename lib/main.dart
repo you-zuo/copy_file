@@ -11,6 +11,7 @@ import 'src/app.dart';
 import 'src/data/copy_database_service.dart';
 import 'src/data/copy_repository.dart';
 import 'src/services/copy_engine_client.dart';
+import 'src/services/directory_access_service.dart';
 import 'src/viewmodels/task_list_view_model.dart';
 
 Future<void> main() async {
@@ -41,19 +42,25 @@ Future<void> main() async {
         '${appSupportDirectory.path}${Platform.pathSeparator}copy_file.db',
   );
   final repository = CopyRepository(databaseService);
+  final directoryAccessService = DirectoryAccessService();
   final engine = CopyEngineClient(
     databasePath:
         '${appSupportDirectory.path}${Platform.pathSeparator}copy_file.db',
     workerCount: 2,
   );
   await engine.initialize();
-  final viewModel = TaskListViewModel(repository: repository, engine: engine);
+  final viewModel = TaskListViewModel(
+    repository: repository,
+    engine: engine,
+    directoryAccessService: directoryAccessService,
+  );
 
   runApp(
     MultiProvider(
       providers: [
         Provider<CopyRepository>.value(value: repository),
         Provider<CopyEngineClient>.value(value: engine),
+        Provider<DirectoryAccessService>.value(value: directoryAccessService),
         ChangeNotifierProvider<TaskListViewModel>.value(value: viewModel),
       ],
       child: const CopyFileBootstrap(),

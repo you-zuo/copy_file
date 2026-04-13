@@ -9,6 +9,7 @@ class MainFlutterWindow: NSWindow {
     self.setFrame(windowFrame, display: true)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
+    SecurityScopedBookmarkChannel.register(with: flutterViewController)
 
     super.awakeFromNib()
   }

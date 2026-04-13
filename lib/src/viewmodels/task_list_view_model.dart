@@ -5,16 +5,20 @@ import 'package:flutter/foundation.dart';
 import '../data/copy_repository.dart';
 import '../data/models.dart';
 import '../services/copy_engine_client.dart';
+import '../services/directory_access_service.dart';
 
 class TaskListViewModel extends ChangeNotifier {
   TaskListViewModel({
     required CopyRepository repository,
     required CopyEngineClient engine,
+    required DirectoryAccessService directoryAccessService,
   }) : _repository = repository,
-       _engine = engine;
+       _engine = engine,
+       _directoryAccessService = directoryAccessService;
 
   final CopyRepository _repository;
   final CopyEngineClient _engine;
+  final DirectoryAccessService _directoryAccessService;
 
   List<CopyTask> _tasks = const <CopyTask>[];
   List<CopyEntry> _selectedEntries = const <CopyEntry>[];
@@ -67,7 +71,12 @@ class TaskListViewModel extends ChangeNotifier {
       final interruptedTaskIds = await _repository.recoverInterruptedTasks();
       await refresh(silent: true);
       for (final taskId in interruptedTaskIds) {
-        unawaited(_engine.startTask(taskId));
+        unawaited(
+          _resumeTaskExecution(taskId).catchError((Object error) {
+            _message = error.toString();
+            notifyListeners();
+          }),
+        );
       }
       _isReady = true;
     } catch (error) {
@@ -121,14 +130,20 @@ class TaskListViewModel extends ChangeNotifier {
     _message = null;
     notifyListeners();
     try {
+      final sourceBookmark = await _directoryAccessService
+          .createBookmarkForPath(sourceDir);
+      final targetBookmark = await _directoryAccessService
+          .createBookmarkForPath(targetDir);
       final taskId = await _repository.createTask(
         name: name,
         sourceDir: sourceDir,
         targetDir: targetDir,
+        sourceBookmark: sourceBookmark,
+        targetBookmark: targetBookmark,
       );
       _selectedTaskId = taskId;
       await refresh(silent: true);
-      unawaited(_engine.startTask(taskId));
+      await _resumeTaskExecution(taskId);
     } catch (error) {
       _message = error.toString();
       notifyListeners();
@@ -140,6 +155,7 @@ class TaskListViewModel extends ChangeNotifier {
     notifyListeners();
     try {
       await _engine.pauseTask(taskId);
+      await _directoryAccessService.deactivateTask(taskId);
       await refresh(silent: true);
     } catch (error) {
       _message = error.toString();
@@ -151,7 +167,7 @@ class TaskListViewModel extends ChangeNotifier {
     _message = null;
     notifyListeners();
     try {
-      unawaited(_engine.startTask(taskId));
+      await _resumeTaskExecution(taskId);
       await refresh(silent: true);
     } catch (error) {
       _message = error.toString();
@@ -171,6 +187,7 @@ class TaskListViewModel extends ChangeNotifier {
       if (task.isActive) {
         await _engine.pauseTask(taskId);
       }
+      await _directoryAccessService.deactivateTask(taskId);
       await _repository.deleteTask(taskId);
       if (_selectedTaskId == taskId) {
         _selectedTaskId = null;
@@ -184,7 +201,17 @@ class TaskListViewModel extends ChangeNotifier {
 
   Future<void> prepareForShutdown() async {
     await _engine.pauseAllForShutdown();
+    await _directoryAccessService.deactivateAll();
     await refresh(silent: true);
+  }
+
+  Future<void> _resumeTaskExecution(int taskId) async {
+    final task = await _repository.getTask(taskId);
+    if (task == null) {
+      return;
+    }
+    await _directoryAccessService.activateTask(task);
+    await _engine.startTask(taskId);
   }
 
   @override
@@ -192,6 +219,7 @@ class TaskListViewModel extends ChangeNotifier {
     _reloadDebounce?.cancel();
     _repositorySubscription?.cancel();
     _engineSubscription?.cancel();
+    unawaited(_directoryAccessService.deactivateAll());
     unawaited(_engine.dispose());
     unawaited(_repository.dispose());
     super.dispose();
