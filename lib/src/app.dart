@@ -529,6 +529,35 @@ class _TaskDetailPanel extends StatelessWidget {
                 ),
               ],
             ),
+            const SizedBox(height: 12),
+            DecoratedBox(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFFD7D1C8)),
+              ),
+              child: SwitchListTile(
+                title: const Text('开始前校验已完成文件'),
+                subtitle: Text(
+                  currentTask.verifyCompletedOnResume
+                      ? '下次开始时只校验本次开始前已完成的文件，之后新复制的文件不再自动校验'
+                      : '下次开始时不校验之前已完成的文件',
+                ),
+                value: currentTask.verifyCompletedOnResume,
+                onChanged: currentTask.status == CopyTaskStatus.paused
+                    ? (value) {
+                        viewModel.updateTaskVerifyCompletedOnResume(
+                          currentTask.id,
+                          value,
+                        );
+                      }
+                    : null,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 4,
+                ),
+              ),
+            ),
             const SizedBox(height: 16),
             Text('源目录', style: Theme.of(context).textTheme.labelLarge),
             const SizedBox(height: 4),

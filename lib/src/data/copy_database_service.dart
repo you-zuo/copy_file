@@ -15,7 +15,7 @@ class CopyDatabaseService {
     _database = await databaseFactory.openDatabase(
       p.normalize(databasePath),
       options: OpenDatabaseOptions(
-        version: 3,
+        version: 4,
         onConfigure: (db) async {
           await db.execute('PRAGMA foreign_keys = ON');
           await db.execute('PRAGMA journal_mode = WAL');
@@ -41,6 +41,7 @@ class CopyDatabaseService {
               total_bytes INTEGER NOT NULL DEFAULT 0,
               copied_bytes INTEGER NOT NULL DEFAULT 0,
               resume_on_launch INTEGER NOT NULL DEFAULT 0,
+              verify_completed_on_resume INTEGER NOT NULL DEFAULT 0,
               last_error TEXT,
               created_at INTEGER NOT NULL,
               updated_at INTEGER NOT NULL
@@ -93,6 +94,11 @@ class CopyDatabaseService {
           if (oldVersion < 3) {
             await db.execute(
               'ALTER TABLE copy_tasks ADD COLUMN worker_count INTEGER NOT NULL DEFAULT 4',
+            );
+          }
+          if (oldVersion < 4) {
+            await db.execute(
+              'ALTER TABLE copy_tasks ADD COLUMN verify_completed_on_resume INTEGER NOT NULL DEFAULT 0',
             );
           }
         },

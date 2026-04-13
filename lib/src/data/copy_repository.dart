@@ -126,6 +126,7 @@ class CopyRepository {
       'total_bytes': 0,
       'copied_bytes': 0,
       'resume_on_launch': 0,
+      'verify_completed_on_resume': 0,
       'created_at': now,
       'updated_at': now,
     });
@@ -220,6 +221,31 @@ class CopyRepository {
       'copy_tasks',
       {
         'worker_count': workerCount,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'id = ?',
+      whereArgs: [taskId],
+    );
+    _notify(taskId);
+  }
+
+  Future<void> updateTaskVerifyCompletedOnResume({
+    required int taskId,
+    required bool enabled,
+  }) async {
+    final task = await getTask(taskId);
+    if (task == null) {
+      return;
+    }
+    if (task.status != CopyTaskStatus.paused) {
+      throw Exception('只有暂停中的任务可以修改校验开关。');
+    }
+
+    final db = await _db;
+    await db.update(
+      'copy_tasks',
+      {
+        'verify_completed_on_resume': enabled ? 1 : 0,
         'updated_at': DateTime.now().millisecondsSinceEpoch,
       },
       where: 'id = ?',
@@ -536,6 +562,32 @@ class CopyRepository {
       whereArgs: afterEntryId == null
           ? [taskId, CopyEntryStatus.completed.name]
           : [taskId, CopyEntryStatus.completed.name, afterEntryId],
+      orderBy: 'id ASC',
+      limit: limit,
+    );
+    return rows.map(CopyEntry.fromMap).toList();
+  }
+
+  Future<List<CopyEntry>> listCompletedEntriesForVerification(
+    int taskId, {
+    required int completedBeforeOrAtMs,
+    int? afterEntryId,
+    int limit = 200,
+  }) async {
+    final db = await _db;
+    final rows = await db.query(
+      'copy_entries',
+      where: afterEntryId == null
+          ? 'task_id = ? AND status = ? AND updated_at <= ?'
+          : 'task_id = ? AND status = ? AND updated_at <= ? AND id > ?',
+      whereArgs: afterEntryId == null
+          ? [taskId, CopyEntryStatus.completed.name, completedBeforeOrAtMs]
+          : [
+              taskId,
+              CopyEntryStatus.completed.name,
+              completedBeforeOrAtMs,
+              afterEntryId,
+            ],
       orderBy: 'id ASC',
       limit: limit,
     );

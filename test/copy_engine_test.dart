@@ -34,7 +34,10 @@ void main() {
         workerCount: 1,
       );
 
-      await harness.engine.startTask(taskId);
+      await harness.engine.startTask(
+        taskId,
+        verifyCompletedEntriesOnStart: false,
+      );
 
       final task = await harness.repository.getTask(taskId);
       final entry = (await harness.repository.listEntries(taskId)).single;
@@ -89,10 +92,15 @@ void main() {
         newBytesCopied: firstChunk.length,
       );
 
-      await harness.engine.startTask(taskId);
+      await harness.engine.startTask(
+        taskId,
+        verifyCompletedEntriesOnStart: false,
+      );
 
       final task = await harness.repository.getTask(taskId);
-      final resumedEntry = (await harness.repository.listEntries(taskId)).single;
+      final resumedEntry = (await harness.repository.listEntries(
+        taskId,
+      )).single;
 
       expect(task?.status, CopyTaskStatus.completed);
       expect(resumedEntry.status, CopyEntryStatus.completed);
@@ -102,6 +110,175 @@ void main() {
       await harness.dispose();
     }
   });
+
+  test(
+    'CopyEngine does not auto-verify completed entries when restarting a paused task',
+    () async {
+      final harness = await _CopyEngineHarness.create();
+      try {
+        final relativePath = 'done.bin';
+        final sourceFile = File(p.join(harness.sourceDir.path, relativePath));
+        await _writePatternFile(sourceFile, copyChunkSize ~/ 2);
+        final sourceHash = await _hashFile(sourceFile);
+        final stat = await sourceFile.stat();
+
+        final taskId = await harness.repository.createTask(
+          name: 'skip completed verification',
+          sourceDir: harness.sourceDir.path,
+          targetDir: harness.targetDir.path,
+          workerCount: 1,
+        );
+
+        await harness.repository.prepareTaskForScan(taskId);
+        await harness.repository
+            .insertScannedEntries(taskId, <ScannedEntryDraft>[
+              ScannedEntryDraft(
+                relativePath: relativePath,
+                size: stat.size,
+                modifiedMs: stat.modified.millisecondsSinceEpoch,
+              ),
+            ]);
+        await harness.repository.finishTaskScan(taskId);
+
+        final entry = (await harness.repository.listEntries(taskId)).single;
+        final targetFile = File(p.join(harness.targetDir.path, relativePath));
+        await targetFile.parent.create(recursive: true);
+        await targetFile.writeAsBytes(
+          Uint8List.fromList(List<int>.filled(stat.size, 7, growable: false)),
+          flush: true,
+        );
+        final corruptedHash = await _hashFile(targetFile);
+
+        await harness.repository.completeEntry(
+          taskId: taskId,
+          entryId: entry.id,
+          sourceMd5: sourceHash,
+        );
+        await harness.repository.markTaskPaused(taskId, resumeOnLaunch: false);
+
+        await harness.engine.startTask(
+          taskId,
+          verifyCompletedEntriesOnStart: false,
+        );
+
+        final task = await harness.repository.getTask(taskId);
+        final resumedEntry = (await harness.repository.listEntries(
+          taskId,
+        )).single;
+
+        expect(task?.status, CopyTaskStatus.completed);
+        expect(resumedEntry.status, CopyEntryStatus.completed);
+        expect(await _hashFile(targetFile), corruptedHash);
+        expect(await _hashFile(targetFile), isNot(sourceHash));
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
+
+  test(
+    'CopyEngine can verify completed entries on restart when the switch is enabled',
+    () async {
+      final harness = await _CopyEngineHarness.create();
+      try {
+        final relativePath = 'done.bin';
+        final sourceFile = File(p.join(harness.sourceDir.path, relativePath));
+        await _writePatternFile(sourceFile, copyChunkSize ~/ 2);
+        final sourceHash = await _hashFile(sourceFile);
+        final stat = await sourceFile.stat();
+
+        final taskId = await harness.repository.createTask(
+          name: 'verify completed verification',
+          sourceDir: harness.sourceDir.path,
+          targetDir: harness.targetDir.path,
+          workerCount: 1,
+        );
+
+        await harness.repository.prepareTaskForScan(taskId);
+        await harness.repository
+            .insertScannedEntries(taskId, <ScannedEntryDraft>[
+              ScannedEntryDraft(
+                relativePath: relativePath,
+                size: stat.size,
+                modifiedMs: stat.modified.millisecondsSinceEpoch,
+              ),
+            ]);
+        await harness.repository.finishTaskScan(taskId);
+
+        final entry = (await harness.repository.listEntries(taskId)).single;
+        final targetFile = File(p.join(harness.targetDir.path, relativePath));
+        await targetFile.parent.create(recursive: true);
+        await targetFile.writeAsBytes(
+          Uint8List.fromList(List<int>.filled(stat.size, 7, growable: false)),
+          flush: true,
+        );
+
+        await harness.repository.completeEntry(
+          taskId: taskId,
+          entryId: entry.id,
+          sourceMd5: sourceHash,
+        );
+        await harness.repository.markTaskPaused(taskId, resumeOnLaunch: false);
+
+        await harness.engine.startTask(
+          taskId,
+          verifyCompletedEntriesOnStart: true,
+        );
+
+        final task = await harness.repository.getTask(taskId);
+        final resumedEntry = (await harness.repository.listEntries(
+          taskId,
+        )).single;
+
+        expect(task?.status, CopyTaskStatus.completed);
+        expect(resumedEntry.status, CopyEntryStatus.completed);
+        expect(await _hashFile(targetFile), sourceHash);
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
+
+  test(
+    'repository persists verify switch and only allows updates while paused',
+    () async {
+      final harness = await _CopyEngineHarness.create();
+      try {
+        final taskId = await harness.repository.createTask(
+          name: 'verify switch',
+          sourceDir: harness.sourceDir.path,
+          targetDir: harness.targetDir.path,
+          workerCount: 1,
+        );
+
+        expect(
+          (await harness.repository.getTask(taskId))?.verifyCompletedOnResume,
+          isFalse,
+        );
+
+        await expectLater(
+          () => harness.repository.updateTaskVerifyCompletedOnResume(
+            taskId: taskId,
+            enabled: true,
+          ),
+          throwsException,
+        );
+
+        await harness.repository.markTaskPaused(taskId, resumeOnLaunch: false);
+        await harness.repository.updateTaskVerifyCompletedOnResume(
+          taskId: taskId,
+          enabled: true,
+        );
+
+        expect(
+          (await harness.repository.getTask(taskId))?.verifyCompletedOnResume,
+          isTrue,
+        );
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
 }
 
 class _CopyEngineHarness {

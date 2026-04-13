@@ -20,13 +20,18 @@ class CopyEngine {
 
   bool get hasActiveTasks => _controls.isNotEmpty;
 
-  Future<void> startTask(int taskId) async {
+  Future<void> startTask(
+    int taskId, {
+    required bool verifyCompletedEntriesOnStart,
+  }) async {
     final existing = _controls[taskId];
     if (existing != null) {
       return existing.completer.future;
     }
 
-    final control = _TaskControl();
+    final control = _TaskControl(
+      verifyCompletedEntriesOnStart: verifyCompletedEntriesOnStart,
+    );
     _controls[taskId] = control;
     unawaited(_runTask(taskId, control));
     return control.completer.future;
@@ -70,14 +75,19 @@ class CopyEngine {
         return;
       }
 
-      final verificationFuture =
-          _verifyCompletedEntriesInBackground(task, control).catchError((
-            Object error,
-            StackTrace stackTrace,
-          ) {
-            control.fatalError ??= error;
-            throw error;
-          });
+      final verificationCutoffMs = DateTime.now().millisecondsSinceEpoch;
+      final verificationFuture = control.verifyCompletedEntriesOnStart
+          ? _verifyCompletedEntriesInBackground(
+              task,
+              control,
+              verificationCutoffMs,
+            ).catchError((Object error, StackTrace stackTrace) {
+              control.fatalError ??= error;
+              throw error;
+            })
+          : Future<_VerificationSummary>.value(
+              const _VerificationSummary(resetCount: 0),
+            );
 
       await _repository.prepareTaskForRun(taskId);
       await _runCopyPhase(task, taskId, control);
@@ -162,6 +172,7 @@ class CopyEngine {
   Future<_VerificationSummary> _verifyCompletedEntriesInBackground(
     CopyTask task,
     _TaskControl control,
+    int completedBeforeOrAtMs,
   ) async {
     const verificationBatchSize = 16;
     int? afterEntryId;
@@ -170,8 +181,9 @@ class CopyEngine {
 
     try {
       while (!control.pauseRequested) {
-        final entries = await _repository.listCompletedEntriesAfter(
+        final entries = await _repository.listCompletedEntriesForVerification(
           task.id,
+          completedBeforeOrAtMs: completedBeforeOrAtMs,
           afterEntryId: afterEntryId,
           limit: verificationBatchSize,
         );
@@ -472,7 +484,10 @@ class CopyEngine {
 }
 
 class _TaskControl {
+  _TaskControl({required this.verifyCompletedEntriesOnStart});
+
   final Completer<void> completer = Completer<void>();
+  final bool verifyCompletedEntriesOnStart;
   bool pauseRequested = false;
   bool resumeOnLaunch = false;
   Object? fatalError;

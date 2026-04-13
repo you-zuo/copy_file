@@ -44,10 +44,17 @@ class CopyEngineClient {
     await _ready.future;
   }
 
-  Future<void> startTask(int taskId) async {
+  Future<void> startTask(
+    int taskId, {
+    required bool verifyCompletedEntriesOnStart,
+  }) async {
     await _ready.future;
     _activeTaskIds.add(taskId);
-    _commandPort!.send({'type': 'start', 'taskId': taskId});
+    _commandPort!.send({
+      'type': 'start',
+      'taskId': taskId,
+      'verifyCompletedEntriesOnStart': verifyCompletedEntriesOnStart,
+    });
   }
 
   Future<void> pauseTask(int taskId, {bool resumeOnLaunch = false}) async {
@@ -197,7 +204,11 @@ Future<void> _copyEngineIsolateMain(Map<String, Object?> args) async {
           notifyRunning(taskId, true);
           unawaited(
             engine
-                .startTask(taskId)
+                .startTask(
+                  taskId,
+                  verifyCompletedEntriesOnStart:
+                      message['verifyCompletedEntriesOnStart']! as bool,
+                )
                 .catchError((Object error, StackTrace stackTrace) {
                   replyPort.send({'type': 'error', 'error': error.toString()});
                 })

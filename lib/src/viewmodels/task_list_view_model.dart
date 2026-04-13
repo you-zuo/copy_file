@@ -313,6 +313,32 @@ class TaskListViewModel extends ChangeNotifier {
     }
   }
 
+  Future<void> updateTaskVerifyCompletedOnResume(
+    int taskId,
+    bool enabled,
+  ) async {
+    _message = null;
+    notifyListeners();
+    try {
+      final task = await _repository.getTask(taskId);
+      if (task == null) {
+        await refresh(silent: true);
+        return;
+      }
+      if (task.status != CopyTaskStatus.paused) {
+        throw Exception('只有暂停中的任务可以修改校验开关。');
+      }
+      await _repository.updateTaskVerifyCompletedOnResume(
+        taskId: taskId,
+        enabled: enabled,
+      );
+      await refresh(silent: true);
+    } catch (error) {
+      _message = error.toString();
+      notifyListeners();
+    }
+  }
+
   Future<void> pauseTask(int taskId) async {
     _message = null;
     notifyListeners();
@@ -430,7 +456,10 @@ class TaskListViewModel extends ChangeNotifier {
       return;
     }
     await _directoryAccessService.activateTask(task);
-    await _engine.startTask(taskId);
+    await _engine.startTask(
+      taskId,
+      verifyCompletedEntriesOnStart: task.verifyCompletedOnResume,
+    );
   }
 
   Future<void> _syncSleepBlocker() {

@@ -33,6 +33,7 @@ class CopyTask {
     required this.totalBytes,
     required this.copiedBytes,
     required this.resumeOnLaunch,
+    required this.verifyCompletedOnResume,
     required this.createdAt,
     required this.updatedAt,
     this.lastError,
@@ -53,6 +54,7 @@ class CopyTask {
   final int totalBytes;
   final int copiedBytes;
   final bool resumeOnLaunch;
+  final bool verifyCompletedOnResume;
   final DateTime createdAt;
   final DateTime updatedAt;
   final String? lastError;
@@ -89,6 +91,7 @@ class CopyTask {
       totalBytes: map['total_bytes']! as int,
       copiedBytes: map['copied_bytes']! as int,
       resumeOnLaunch: (map['resume_on_launch']! as int) == 1,
+      verifyCompletedOnResume: (map['verify_completed_on_resume']! as int) == 1,
       lastError: map['last_error'] as String?,
       createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at']! as int),
       updatedAt: DateTime.fromMillisecondsSinceEpoch(map['updated_at']! as int),
