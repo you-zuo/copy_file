@@ -150,6 +150,63 @@ class CopyRepository {
     _notify(taskId);
   }
 
+  Future<void> updateTaskDefinition({
+    required int taskId,
+    required String name,
+    required String sourceDir,
+    required String targetDir,
+    String? sourceBookmark,
+    String? targetBookmark,
+    required bool resetProgress,
+    CopyTaskStatus? status,
+  }) async {
+    final db = await _db;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await db.transaction((txn) async {
+      if (resetProgress) {
+        await txn.delete(
+          'copy_entries',
+          where: 'task_id = ?',
+          whereArgs: [taskId],
+        );
+      }
+
+      final values = <String, Object?>{
+        'name': name,
+        'source_dir': sourceDir,
+        'target_dir': targetDir,
+        'updated_at': now,
+      };
+      if (sourceBookmark != null) {
+        values['source_bookmark'] = sourceBookmark;
+      }
+      if (targetBookmark != null) {
+        values['target_bookmark'] = targetBookmark;
+      }
+      if (resetProgress) {
+        values.addAll(<String, Object?>{
+          'status': status!.name,
+          'scan_completed': 0,
+          'total_files': 0,
+          'completed_files': 0,
+          'failed_files': 0,
+          'total_bytes': 0,
+          'copied_bytes': 0,
+          'resume_on_launch': 0,
+          'last_error': null,
+        });
+      }
+
+      await txn.update(
+        'copy_tasks',
+        values,
+        where: 'id = ?',
+        whereArgs: [taskId],
+      );
+    });
+    _notify(taskId);
+  }
+
   Future<void> deleteTask(int taskId) async {
     final db = await _db;
     await db.delete('copy_tasks', where: 'id = ?', whereArgs: [taskId]);
@@ -590,6 +647,21 @@ class CopyRepository {
     final db = await _db;
     final now = DateTime.now().millisecondsSinceEpoch;
     await db.transaction((txn) async {
+      final rows = await txn.query(
+        'copy_entries',
+        columns: ['status', 'bytes_copied'],
+        where: 'id = ? AND task_id = ?',
+        whereArgs: [entryId, taskId],
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        return;
+      }
+
+      final previousStatus = copyEntryStatusFromDb(
+        rows.first['status']! as String,
+      );
+      final previousBytesCopied = rows.first['bytes_copied']! as int;
       await txn.update(
         'copy_entries',
         {
@@ -607,6 +679,28 @@ class CopyRepository {
         where: 'entry_id = ?',
         whereArgs: [entryId],
       );
+      final completedDelta = previousStatus == CopyEntryStatus.completed
+          ? -1
+          : 0;
+      if (previousBytesCopied != 0 || completedDelta != 0) {
+        await txn.rawUpdate(
+          '''
+          UPDATE copy_tasks
+          SET copied_bytes = MAX(copied_bytes + ?, 0),
+              completed_files = MAX(completed_files + ?, 0),
+              updated_at = ?
+          WHERE id = ?
+          ''',
+          [-previousBytesCopied, completedDelta, now, taskId],
+        );
+      } else {
+        await txn.update(
+          'copy_tasks',
+          {'updated_at': now},
+          where: 'id = ?',
+          whereArgs: [taskId],
+        );
+      }
     });
     _notify(taskId);
   }

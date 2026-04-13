@@ -10,6 +10,7 @@ class MainFlutterWindow: NSWindow {
 
     RegisterGeneratedPlugins(registry: flutterViewController)
     SecurityScopedBookmarkChannel.register(with: flutterViewController)
+    SleepBlockerChannel.register(with: flutterViewController)
 
     super.awakeFromNib()
   }

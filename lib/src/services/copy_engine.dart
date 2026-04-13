@@ -3,13 +3,13 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
-import 'package:convert/convert.dart';
 import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 
 import '../core/copy_constants.dart';
 import '../data/copy_repository.dart';
 import '../data/models.dart';
+import 'copy_verifier_isolate.dart';
 
 class CopyEngine {
   CopyEngine({required CopyRepository repository, int workerCount = 2})
@@ -72,22 +72,19 @@ class CopyEngine {
         return;
       }
 
-      await _verifyCompletedEntries(task, control);
-
-      if (control.pauseRequested) {
-        await _repository.markTaskPaused(
-          taskId,
-          resumeOnLaunch: control.resumeOnLaunch,
-        );
-        return;
-      }
+      final verificationFuture =
+          _verifyCompletedEntriesInBackground(task, control).catchError((
+            Object error,
+            StackTrace stackTrace,
+          ) {
+            control.fatalError ??= error;
+            throw error;
+          });
 
       await _repository.prepareTaskForRun(taskId);
-      final workers = List<Future<void>>.generate(
-        _workerCount,
-        (_) => _runCopyWorker(taskId, control),
-      );
-      await Future.wait(workers);
+      await _runCopyPhase(taskId, control);
+
+      final verificationSummary = await verificationFuture;
 
       if (control.fatalError != null) {
         throw control.fatalError!;
@@ -101,6 +98,22 @@ class CopyEngine {
         return;
       }
 
+      if (verificationSummary.resetCount > 0) {
+        await _runCopyPhase(taskId, control);
+
+        if (control.fatalError != null) {
+          throw control.fatalError!;
+        }
+
+        if (control.pauseRequested) {
+          await _repository.markTaskPaused(
+            taskId,
+            resumeOnLaunch: control.resumeOnLaunch,
+          );
+          return;
+        }
+      }
+
       await _repository.finalizeTaskStatus(taskId);
     } catch (error) {
       await _repository.markTaskFailed(taskId, error.toString());
@@ -108,6 +121,14 @@ class CopyEngine {
       _controls.remove(taskId);
       control.completer.complete();
     }
+  }
+
+  Future<void> _runCopyPhase(int taskId, _TaskControl control) async {
+    final workers = List<Future<void>>.generate(
+      _workerCount,
+      (_) => _runCopyWorker(taskId, control),
+    );
+    await Future.wait(workers);
   }
 
   Future<void> _runCopyWorker(int taskId, _TaskControl control) async {
@@ -131,49 +152,68 @@ class CopyEngine {
     }
   }
 
-  Future<void> _verifyCompletedEntries(
+  Future<_VerificationSummary> _verifyCompletedEntriesInBackground(
     CopyTask task,
     _TaskControl control,
   ) async {
+    const verificationBatchSize = 16;
     int? afterEntryId;
+    var resetCount = 0;
+    final verifier = await CopyVerifierClient.spawn(targetDir: task.targetDir);
 
-    while (!control.pauseRequested) {
-      final entries = await _repository.listCompletedEntriesAfter(
-        task.id,
-        afterEntryId: afterEntryId,
-      );
-      if (entries.isEmpty) {
-        break;
+    try {
+      while (!control.pauseRequested) {
+        final entries = await _repository.listCompletedEntriesAfter(
+          task.id,
+          afterEntryId: afterEntryId,
+          limit: verificationBatchSize,
+        );
+        if (entries.isEmpty) {
+          break;
+        }
+
+        afterEntryId = entries.last.id;
+        final results = await verifier.verifyBatch(
+          entries
+              .map(
+                (entry) => CopyVerificationJob(
+                  entryId: entry.id,
+                  relativePath: entry.relativePath,
+                  size: entry.size,
+                  sourceMd5: entry.sourceMd5,
+                ),
+              )
+              .toList(growable: false),
+        );
+
+        for (final result in results) {
+          if (control.pauseRequested) {
+            break;
+          }
+
+          if (result.mismatchReason case final mismatchReason?) {
+            final entry = entries.firstWhere(
+              (candidate) => candidate.id == result.entryId,
+            );
+            final targetFile = File(p.join(task.targetDir, entry.relativePath));
+            if (await targetFile.exists()) {
+              await targetFile.delete();
+            }
+            await _repository.resetCompletedEntryForRecopy(
+              taskId: task.id,
+              entryId: entry.id,
+              error: mismatchReason,
+            );
+            resetCount += 1;
+          }
+        }
       }
 
-      for (final entry in entries) {
-        if (control.pauseRequested) {
-          return;
-        }
-
-        afterEntryId = entry.id;
-        final targetFile = File(p.join(task.targetDir, entry.relativePath));
-        final mismatchReason = await _validateCompletedTarget(
-          entry,
-          targetFile,
-        );
-        if (mismatchReason == null) {
-          continue;
-        }
-
-        if (await targetFile.exists()) {
-          await targetFile.delete();
-        }
-
-        await _repository.resetCompletedEntryForRecopy(
-          taskId: task.id,
-          entryId: entry.id,
-          error: mismatchReason,
-        );
-      }
+      await _repository.recalculateTaskMetrics(task.id);
+      return _VerificationSummary(resetCount: resetCount);
+    } finally {
+      await verifier.dispose();
     }
-
-    await _repository.recalculateTaskMetrics(task.id);
   }
 
   Future<void> _scanTask(CopyTask task, _TaskControl control) async {
@@ -248,7 +288,7 @@ class CopyEngine {
     }
 
     await targetFile.parent.create(recursive: true);
-    final digestSink = AccumulatorSink<Digest>();
+    final digestSink = _DigestAccumulatorSink();
     final digestInput = md5.startChunkedConversion(digestSink);
     var digestClosed = false;
 
@@ -280,7 +320,7 @@ class CopyEngine {
         var chunkIndex = offset ~/ copyChunkSize;
 
         while (offset < entry.size) {
-          if (control.pauseRequested) {
+          if (control.pauseRequested || control.fatalError != null) {
             break;
           }
 
@@ -311,13 +351,13 @@ class CopyEngine {
       }
     }
 
-    if (control.pauseRequested) {
+    if (control.pauseRequested || control.fatalError != null) {
       closeDigest();
       return;
     }
 
     closeDigest();
-    final sourceMd5 = digestSink.events.single.toString();
+    final sourceMd5 = digestSink.value!.toString();
 
     await _repository.completeEntry(
       taskId: task.id,
@@ -403,36 +443,6 @@ class CopyEngine {
 
     return verifiedOffset;
   }
-
-  Future<String?> _validateCompletedTarget(
-    CopyEntry entry,
-    File targetFile,
-  ) async {
-    if (entry.sourceMd5 == null || entry.sourceMd5!.isEmpty) {
-      return '数据库中缺少 MD5，已重置重新拷贝';
-    }
-
-    if (!await targetFile.exists()) {
-      return '目标文件缺失，已重置重新拷贝';
-    }
-
-    final fileLength = await targetFile.length();
-    if (fileLength != entry.size) {
-      return '目标文件大小不一致，已重置重新拷贝';
-    }
-
-    final targetMd5 = await _hashFile(targetFile);
-    if (targetMd5 != entry.sourceMd5) {
-      return '目标文件 MD5 不一致，已重置重新拷贝';
-    }
-
-    return null;
-  }
-
-  Future<String> _hashFile(File file) async {
-    final digest = await md5.bind(file.openRead()).first;
-    return digest.toString();
-  }
 }
 
 class _TaskControl {
@@ -440,4 +450,22 @@ class _TaskControl {
   bool pauseRequested = false;
   bool resumeOnLaunch = false;
   Object? fatalError;
+}
+
+class _VerificationSummary {
+  const _VerificationSummary({required this.resetCount});
+
+  final int resetCount;
+}
+
+class _DigestAccumulatorSink implements Sink<Digest> {
+  Digest? value;
+
+  @override
+  void add(Digest data) {
+    value = data;
+  }
+
+  @override
+  void close() {}
 }

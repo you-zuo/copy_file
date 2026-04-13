@@ -129,6 +129,7 @@ class CopyEngineClient {
         } else {
           _activeTaskIds.remove(taskId);
         }
+        _taskChanges.add(taskId);
         break;
       case 'ack':
         final requestId = message['requestId']! as int;

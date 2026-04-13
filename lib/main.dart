@@ -12,6 +12,7 @@ import 'src/data/copy_database_service.dart';
 import 'src/data/copy_repository.dart';
 import 'src/services/copy_engine_client.dart';
 import 'src/services/directory_access_service.dart';
+import 'src/services/sleep_blocker_service.dart';
 import 'src/viewmodels/task_list_view_model.dart';
 
 Future<void> main() async {
@@ -43,6 +44,7 @@ Future<void> main() async {
   );
   final repository = CopyRepository(databaseService);
   final directoryAccessService = DirectoryAccessService();
+  final sleepBlockerService = SleepBlockerService();
   final engine = CopyEngineClient(
     databasePath:
         '${appSupportDirectory.path}${Platform.pathSeparator}copy_file.db',
@@ -53,6 +55,7 @@ Future<void> main() async {
     repository: repository,
     engine: engine,
     directoryAccessService: directoryAccessService,
+    sleepBlockerService: sleepBlockerService,
   );
 
   runApp(
@@ -61,6 +64,7 @@ Future<void> main() async {
         Provider<CopyRepository>.value(value: repository),
         Provider<CopyEngineClient>.value(value: engine),
         Provider<DirectoryAccessService>.value(value: directoryAccessService),
+        Provider<SleepBlockerService>.value(value: sleepBlockerService),
         ChangeNotifierProvider<TaskListViewModel>.value(value: viewModel),
       ],
       child: const CopyFileBootstrap(),

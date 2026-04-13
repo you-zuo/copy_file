@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
@@ -20,6 +22,7 @@ class CopyFileBootstrap extends StatefulWidget {
 class _CopyFileBootstrapState extends State<CopyFileBootstrap>
     with WindowListener {
   bool _closing = false;
+  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
 
   @override
   void initState() {
@@ -41,6 +44,11 @@ class _CopyFileBootstrapState extends State<CopyFileBootstrap>
   }
 
   @override
+  void onWindowFocus() {
+    unawaited(_syncHardwareKeyboardState());
+  }
+
+  @override
   Future<void> onWindowClose() async {
     if (_closing) {
       await windowManager.destroy();
@@ -48,9 +56,13 @@ class _CopyFileBootstrapState extends State<CopyFileBootstrap>
     }
 
     final viewModel = context.read<TaskListViewModel>();
+    final dialogContext = _navigatorKey.currentContext;
+    if (dialogContext == null) {
+      return;
+    }
     final shouldClose =
         await showDialog<bool>(
-          context: context,
+          context: dialogContext,
           builder: (context) => AlertDialog(
             title: Text(viewModel.hasActiveTasks ? '退出前暂停任务' : '确认退出应用'),
             content: Text(
@@ -84,6 +96,7 @@ class _CopyFileBootstrapState extends State<CopyFileBootstrap>
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: _navigatorKey,
       title: 'Copy File',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
@@ -126,9 +139,9 @@ class CopyFileHomePage extends StatelessWidget {
                 padding: const EdgeInsets.only(right: 16),
                 child: FilledButton.icon(
                   onPressed: () async {
-                    final result = await showDialog<_CreateTaskResult>(
+                    final result = await showDialog<_TaskDraftResult>(
                       context: context,
-                      builder: (_) => const _CreateTaskDialog(),
+                      builder: (_) => const _TaskEditorDialog(),
                     );
                     if (result == null) {
                       return;
@@ -367,6 +380,25 @@ class _TaskDetailPanel extends StatelessWidget {
                 ),
                 OutlinedButton.icon(
                   onPressed: () async {
+                    final result = await showDialog<_TaskDraftResult>(
+                      context: context,
+                      builder: (_) => _TaskEditorDialog(task: currentTask),
+                    );
+                    if (result == null || !context.mounted) {
+                      return;
+                    }
+                    await viewModel.editTask(
+                      taskId: currentTask.id,
+                      name: result.name,
+                      sourceDir: result.sourceDir,
+                      targetDir: result.targetDir,
+                    );
+                  },
+                  icon: const Icon(Icons.edit_outlined),
+                  label: const Text('编辑任务'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () async {
                     final confirmed = await showDialog<bool>(
                       context: context,
                       builder: (context) => AlertDialog(
@@ -536,18 +568,31 @@ class _TaskDetailPanel extends StatelessWidget {
   }
 }
 
-class _CreateTaskDialog extends StatefulWidget {
-  const _CreateTaskDialog();
+class _TaskEditorDialog extends StatefulWidget {
+  const _TaskEditorDialog({this.task});
+
+  final CopyTask? task;
 
   @override
-  State<_CreateTaskDialog> createState() => _CreateTaskDialogState();
+  State<_TaskEditorDialog> createState() => _TaskEditorDialogState();
 }
 
-class _CreateTaskDialogState extends State<_CreateTaskDialog> {
-  final TextEditingController _nameController = TextEditingController();
-  final TextEditingController _sourceController = TextEditingController();
-  final TextEditingController _targetController = TextEditingController();
+class _TaskEditorDialogState extends State<_TaskEditorDialog> {
+  late final TextEditingController _nameController;
+  late final TextEditingController _sourceController;
+  late final TextEditingController _targetController;
   String? _error;
+
+  bool get _isEditing => widget.task != null;
+
+  @override
+  void initState() {
+    super.initState();
+    final task = widget.task;
+    _nameController = TextEditingController(text: task?.name ?? '');
+    _sourceController = TextEditingController(text: task?.sourceDir ?? '');
+    _targetController = TextEditingController(text: task?.targetDir ?? '');
+  }
 
   @override
   void dispose() {
@@ -560,7 +605,7 @@ class _CreateTaskDialogState extends State<_CreateTaskDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('新建复制任务'),
+      title: Text(_isEditing ? '编辑复制任务' : '新建复制任务'),
       content: SizedBox(
         width: 620,
         child: Column(
@@ -585,6 +630,19 @@ class _CreateTaskDialogState extends State<_CreateTaskDialog> {
               label: '目标目录',
               buttonText: '选择目标目录',
             ),
+            if (_isEditing)
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    '保存后会重置当前任务的扫描结果和断点进度，并按新的目录重新开始。',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: const Color(0xFF5F5545),
+                    ),
+                  ),
+                ),
+              ),
             if (_error case final error?)
               Padding(
                 padding: const EdgeInsets.only(top: 12),
@@ -606,7 +664,10 @@ class _CreateTaskDialogState extends State<_CreateTaskDialog> {
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('取消'),
         ),
-        FilledButton(onPressed: _submit, child: const Text('创建并开始')),
+        FilledButton(
+          onPressed: _submit,
+          child: Text(_isEditing ? '保存修改' : '创建并开始'),
+        ),
       ],
     );
   }
@@ -647,7 +708,7 @@ class _CreateTaskDialogState extends State<_CreateTaskDialog> {
       return;
     }
     Navigator.of(context).pop(
-      _CreateTaskResult(name: name, sourceDir: sourceDir, targetDir: targetDir),
+      _TaskDraftResult(name: name, sourceDir: sourceDir, targetDir: targetDir),
     );
   }
 }
@@ -677,12 +738,16 @@ class _PathField extends StatelessWidget {
         OutlinedButton(
           onPressed: () async {
             try {
+              FocusManager.instance.primaryFocus?.unfocus();
+              await _syncHardwareKeyboardState();
               final directory = await getDirectoryPath();
+              await _syncHardwareKeyboardState();
               if (directory == null) {
                 return;
               }
               controller.text = directory;
             } catch (error) {
+              await _syncHardwareKeyboardState();
               if (!context.mounted) {
                 return;
               }
@@ -784,8 +849,8 @@ class _StatusChip extends StatelessWidget {
   }
 }
 
-class _CreateTaskResult {
-  const _CreateTaskResult({
+class _TaskDraftResult {
+  const _TaskDraftResult({
     required this.name,
     required this.sourceDir,
     required this.targetDir,
@@ -834,3 +899,11 @@ String formatDateTime(DateTime dateTime) {
 
 bool get _isDesktop =>
     !kIsWeb && (Platform.isMacOS || Platform.isWindows || Platform.isLinux);
+
+Future<void> _syncHardwareKeyboardState() async {
+  try {
+    await HardwareKeyboard.instance.syncKeyboardState();
+  } catch (_) {
+    // Best-effort workaround for desktop keyboard state desync after native dialogs.
+  }
+}
