@@ -9,7 +9,7 @@ import '../data/copy_repository.dart';
 import 'copy_engine.dart';
 
 class CopyEngineClient {
-  CopyEngineClient({required this.databasePath, this.workerCount = 2});
+  CopyEngineClient({required this.databasePath, this.workerCount = 4});
 
   final String databasePath;
   final int workerCount;
@@ -151,7 +151,6 @@ class CopyEngineClient {
 Future<void> _copyEngineIsolateMain(Map<String, Object?> args) async {
   final replyPort = args['replyPort']! as SendPort;
   final databasePath = args['databasePath']! as String;
-  final workerCount = args['workerCount']! as int;
 
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfi;
@@ -161,7 +160,7 @@ Future<void> _copyEngineIsolateMain(Map<String, Object?> args) async {
     CopyDatabaseService(databasePath: databasePath),
   );
   await repository.initialize();
-  final engine = CopyEngine(repository: repository, workerCount: workerCount);
+  final engine = CopyEngine(repository: repository);
   final runningTasks = <int>{};
 
   void notifyRunning(int taskId, bool running) {

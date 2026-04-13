@@ -24,6 +24,8 @@ class TaskListViewModel extends ChangeNotifier {
   final DirectoryAccessService _directoryAccessService;
   final SleepBlockerService _sleepBlockerService;
 
+  int get defaultWorkerCount => _engine.workerCount;
+
   List<CopyTask> _tasks = const <CopyTask>[];
   List<CopyEntry> _selectedEntries = const <CopyEntry>[];
   int? _selectedTaskId;
@@ -59,6 +61,8 @@ class TaskListViewModel extends ChangeNotifier {
 
   bool get hasActiveTasks =>
       _engine.hasActiveTasks || _tasks.any((task) => task.isActive);
+  bool get hasPausableTasks => _tasks.any((task) => task.isActive);
+  bool get hasResumableTasks => _tasks.any((task) => task.canResume);
 
   Future<void> initialize() async {
     if (_isReady || _isInitializing) {
@@ -180,6 +184,7 @@ class TaskListViewModel extends ChangeNotifier {
     required String name,
     required String sourceDir,
     required String targetDir,
+    int? workerCount,
   }) async {
     _message = null;
     notifyListeners();
@@ -192,6 +197,7 @@ class TaskListViewModel extends ChangeNotifier {
         name: name,
         sourceDir: sourceDir,
         targetDir: targetDir,
+        workerCount: workerCount ?? defaultWorkerCount,
         sourceBookmark: sourceBookmark,
         targetBookmark: targetBookmark,
       );
@@ -210,6 +216,7 @@ class TaskListViewModel extends ChangeNotifier {
     required String name,
     required String sourceDir,
     required String targetDir,
+    required int workerCount,
   }) async {
     _message = null;
     notifyListeners();
@@ -223,7 +230,8 @@ class TaskListViewModel extends ChangeNotifier {
       final nameChanged = task.name != name;
       final directoriesChanged =
           task.sourceDir != sourceDir || task.targetDir != targetDir;
-      if (!nameChanged && !directoriesChanged) {
+      final workerCountChanged = task.workerCount != workerCount;
+      if (!nameChanged && !directoriesChanged && !workerCountChanged) {
         return;
       }
 
@@ -233,6 +241,7 @@ class TaskListViewModel extends ChangeNotifier {
           name: name,
           sourceDir: task.sourceDir,
           targetDir: task.targetDir,
+          workerCount: workerCount,
           resetProgress: false,
         );
         await refresh(silent: true);
@@ -261,6 +270,7 @@ class TaskListViewModel extends ChangeNotifier {
         name: name,
         sourceDir: sourceDir,
         targetDir: targetDir,
+        workerCount: workerCount,
         sourceBookmark: sourceBookmark,
         targetBookmark: targetBookmark,
         resetProgress: true,
@@ -274,6 +284,29 @@ class TaskListViewModel extends ChangeNotifier {
         await refresh(silent: true);
       }
       await _syncSleepBlocker();
+    } catch (error) {
+      _message = error.toString();
+      notifyListeners();
+    }
+  }
+
+  Future<void> updateTaskWorkerCount(int taskId, int workerCount) async {
+    _message = null;
+    notifyListeners();
+    try {
+      final task = await _repository.getTask(taskId);
+      if (task == null) {
+        await refresh(silent: true);
+        return;
+      }
+      if (task.isActive) {
+        throw Exception('运行中的任务不能修改并发数，请先暂停。');
+      }
+      await _repository.updateTaskWorkerCount(
+        taskId: taskId,
+        workerCount: workerCount,
+      );
+      await refresh(silent: true);
     } catch (error) {
       _message = error.toString();
       notifyListeners();
@@ -294,12 +327,64 @@ class TaskListViewModel extends ChangeNotifier {
     }
   }
 
+  Future<void> pauseAllTasks() async {
+    _message = null;
+    notifyListeners();
+    try {
+      final taskIds = _tasks
+          .where((task) => task.isActive)
+          .map((task) => task.id)
+          .toList(growable: false);
+      for (final taskId in taskIds) {
+        await _engine.pauseTask(taskId);
+        await _directoryAccessService.deactivateTask(taskId);
+      }
+      await refresh(silent: true);
+      await _syncSleepBlocker();
+    } catch (error) {
+      _message = error.toString();
+      notifyListeners();
+    }
+  }
+
   Future<void> resumeTask(int taskId) async {
     _message = null;
     notifyListeners();
     try {
       await _resumeTaskExecution(taskId);
       await refresh(silent: true);
+      await _syncSleepBlocker();
+    } catch (error) {
+      _message = error.toString();
+      notifyListeners();
+    }
+  }
+
+  Future<void> resumeAllTasks() async {
+    _message = null;
+    notifyListeners();
+    try {
+      final taskIds = _tasks
+          .where((task) => task.canResume)
+          .map((task) => task.id)
+          .toList(growable: false);
+      final failures = <String>[];
+      for (final taskId in taskIds) {
+        final task = _tasks.cast<CopyTask?>().firstWhere(
+          (candidate) => candidate?.id == taskId,
+          orElse: () => null,
+        );
+        try {
+          await _resumeTaskExecution(taskId);
+        } catch (error) {
+          failures.add('${task?.name ?? '任务#$taskId'}: $error');
+        }
+      }
+      await refresh(silent: true);
+      if (failures.isNotEmpty) {
+        _message = failures.join('\n');
+        notifyListeners();
+      }
       await _syncSleepBlocker();
     } catch (error) {
       _message = error.toString();

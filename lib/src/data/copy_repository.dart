@@ -24,7 +24,7 @@ class CopyRepository {
     final db = await _db;
     final rows = await db.query(
       'copy_tasks',
-      orderBy: 'updated_at DESC, id DESC',
+      orderBy: 'created_at ASC, id ASC',
     );
     return rows.map(CopyTask.fromMap).toList();
   }
@@ -105,6 +105,7 @@ class CopyRepository {
     required String name,
     required String sourceDir,
     required String targetDir,
+    required int workerCount,
     String? sourceBookmark,
     String? targetBookmark,
   }) async {
@@ -114,6 +115,7 @@ class CopyRepository {
       'name': name,
       'source_dir': sourceDir,
       'target_dir': targetDir,
+      'worker_count': workerCount,
       'source_bookmark': sourceBookmark,
       'target_bookmark': targetBookmark,
       'status': CopyTaskStatus.queued.name,
@@ -155,6 +157,7 @@ class CopyRepository {
     required String name,
     required String sourceDir,
     required String targetDir,
+    required int workerCount,
     String? sourceBookmark,
     String? targetBookmark,
     required bool resetProgress,
@@ -175,6 +178,7 @@ class CopyRepository {
         'name': name,
         'source_dir': sourceDir,
         'target_dir': targetDir,
+        'worker_count': workerCount,
         'updated_at': now,
       };
       if (sourceBookmark != null) {
@@ -204,6 +208,23 @@ class CopyRepository {
         whereArgs: [taskId],
       );
     });
+    _notify(taskId);
+  }
+
+  Future<void> updateTaskWorkerCount({
+    required int taskId,
+    required int workerCount,
+  }) async {
+    final db = await _db;
+    await db.update(
+      'copy_tasks',
+      {
+        'worker_count': workerCount,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'id = ?',
+      whereArgs: [taskId],
+    );
     _notify(taskId);
   }
 

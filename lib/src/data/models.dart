@@ -22,6 +22,7 @@ class CopyTask {
     required this.name,
     required this.sourceDir,
     required this.targetDir,
+    required this.workerCount,
     required this.sourceBookmark,
     required this.targetBookmark,
     required this.status,
@@ -41,6 +42,7 @@ class CopyTask {
   final String name;
   final String sourceDir;
   final String targetDir;
+  final int workerCount;
   final String? sourceBookmark;
   final String? targetBookmark;
   final CopyTaskStatus status;
@@ -76,6 +78,7 @@ class CopyTask {
       name: map['name']! as String,
       sourceDir: map['source_dir']! as String,
       targetDir: map['target_dir']! as String,
+      workerCount: map['worker_count']! as int,
       sourceBookmark: map['source_bookmark'] as String?,
       targetBookmark: map['target_bookmark'] as String?,
       status: copyTaskStatusFromDb(map['status']! as String),

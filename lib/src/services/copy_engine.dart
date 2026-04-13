@@ -12,12 +12,9 @@ import '../data/models.dart';
 import 'copy_verifier_isolate.dart';
 
 class CopyEngine {
-  CopyEngine({required CopyRepository repository, int workerCount = 2})
-    : _repository = repository,
-      _workerCount = workerCount < 1 ? 1 : workerCount;
+  CopyEngine({required CopyRepository repository}) : _repository = repository;
 
   final CopyRepository _repository;
-  final int _workerCount;
   final Map<int, _TaskControl> _controls = <int, _TaskControl>{};
 
   bool get hasActiveTasks => _controls.isNotEmpty;
@@ -82,7 +79,7 @@ class CopyEngine {
           });
 
       await _repository.prepareTaskForRun(taskId);
-      await _runCopyPhase(taskId, control);
+      await _runCopyPhase(task, taskId, control);
 
       final verificationSummary = await verificationFuture;
 
@@ -99,7 +96,11 @@ class CopyEngine {
       }
 
       if (verificationSummary.resetCount > 0) {
-        await _runCopyPhase(taskId, control);
+        final latestTask = await _repository.getTask(taskId);
+        if (latestTask == null) {
+          return;
+        }
+        await _runCopyPhase(latestTask, taskId, control);
 
         if (control.fatalError != null) {
           throw control.fatalError!;
@@ -123,9 +124,14 @@ class CopyEngine {
     }
   }
 
-  Future<void> _runCopyPhase(int taskId, _TaskControl control) async {
+  Future<void> _runCopyPhase(
+    CopyTask task,
+    int taskId,
+    _TaskControl control,
+  ) async {
+    final workerCount = task.workerCount < 1 ? 1 : task.workerCount;
     final workers = List<Future<void>>.generate(
-      _workerCount,
+      workerCount,
       (_) => _runCopyWorker(taskId, control),
     );
     await Future.wait(workers);

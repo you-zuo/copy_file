@@ -15,7 +15,7 @@ class CopyDatabaseService {
     _database = await databaseFactory.openDatabase(
       p.normalize(databasePath),
       options: OpenDatabaseOptions(
-        version: 2,
+        version: 3,
         onConfigure: (db) async {
           await db.execute('PRAGMA foreign_keys = ON');
           await db.execute('PRAGMA journal_mode = WAL');
@@ -30,6 +30,7 @@ class CopyDatabaseService {
               name TEXT NOT NULL,
               source_dir TEXT NOT NULL,
               target_dir TEXT NOT NULL,
+              worker_count INTEGER NOT NULL DEFAULT 4,
               source_bookmark TEXT,
               target_bookmark TEXT,
               status TEXT NOT NULL,
@@ -87,6 +88,11 @@ class CopyDatabaseService {
             );
             await db.execute(
               'ALTER TABLE copy_tasks ADD COLUMN target_bookmark TEXT',
+            );
+          }
+          if (oldVersion < 3) {
+            await db.execute(
+              'ALTER TABLE copy_tasks ADD COLUMN worker_count INTEGER NOT NULL DEFAULT 4',
             );
           }
         },

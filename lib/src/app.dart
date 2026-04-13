@@ -150,6 +150,7 @@ class CopyFileHomePage extends StatelessWidget {
                       name: result.name,
                       sourceDir: result.sourceDir,
                       targetDir: result.targetDir,
+                      workerCount: result.workerCount,
                     );
                   },
                   icon: const Icon(Icons.add),
@@ -246,6 +247,27 @@ class _TaskListPanel extends StatelessWidget {
             Text(
               '任务状态会写入本地 SQLite，窗口关闭后下次仍可恢复。',
               style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 16),
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                FilledButton.tonalIcon(
+                  onPressed: viewModel.hasResumableTasks
+                      ? () => viewModel.resumeAllTasks()
+                      : null,
+                  icon: const Icon(Icons.play_arrow),
+                  label: const Text('全部开始'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: viewModel.hasPausableTasks
+                      ? () => viewModel.pauseAllTasks()
+                      : null,
+                  icon: const Icon(Icons.pause),
+                  label: const Text('全部暂停'),
+                ),
+              ],
             ),
             const SizedBox(height: 16),
             if (tasks.isEmpty)
@@ -392,6 +414,7 @@ class _TaskDetailPanel extends StatelessWidget {
                       name: result.name,
                       sourceDir: result.sourceDir,
                       targetDir: result.targetDir,
+                      workerCount: result.workerCount,
                     );
                   },
                   icon: const Icon(Icons.edit_outlined),
@@ -461,6 +484,48 @@ class _TaskDetailPanel extends StatelessWidget {
                 _InfoTag(
                   label: '最近更新',
                   value: formatDateTime(currentTask.updatedAt),
+                ),
+                _InfoTag(label: '并发数', value: '${currentTask.workerCount}'),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Text('任务并发', style: Theme.of(context).textTheme.labelLarge),
+                const SizedBox(width: 12),
+                SizedBox(
+                  width: 120,
+                  child: DropdownButtonFormField<int>(
+                    initialValue: currentTask.workerCount,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
+                    items: List<DropdownMenuItem<int>>.generate(
+                      8,
+                      (index) => DropdownMenuItem<int>(
+                        value: index + 1,
+                        child: Text('${index + 1}'),
+                      ),
+                    ),
+                    onChanged: currentTask.isActive
+                        ? null
+                        : (value) {
+                            if (value == null ||
+                                value == currentTask.workerCount) {
+                              return;
+                            }
+                            viewModel.updateTaskWorkerCount(
+                              currentTask.id,
+                              value,
+                            );
+                          },
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Text(
+                  currentTask.isActive ? '请先暂停任务再修改' : '暂停时可修改',
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],
             ),
@@ -581,6 +646,7 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
   late final TextEditingController _nameController;
   late final TextEditingController _sourceController;
   late final TextEditingController _targetController;
+  late int _workerCount;
   String? _error;
 
   bool get _isEditing => widget.task != null;
@@ -592,6 +658,9 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
     _nameController = TextEditingController(text: task?.name ?? '');
     _sourceController = TextEditingController(text: task?.sourceDir ?? '');
     _targetController = TextEditingController(text: task?.targetDir ?? '');
+    _workerCount =
+        task?.workerCount ??
+        context.read<TaskListViewModel>().defaultWorkerCount;
   }
 
   @override
@@ -629,6 +698,26 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
               controller: _targetController,
               label: '目标目录',
               buttonText: '选择目标目录',
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<int>(
+              initialValue: _workerCount,
+              decoration: const InputDecoration(labelText: '任务并发数'),
+              items: List<DropdownMenuItem<int>>.generate(
+                8,
+                (index) => DropdownMenuItem<int>(
+                  value: index + 1,
+                  child: Text('${index + 1}'),
+                ),
+              ),
+              onChanged: (value) {
+                if (value == null) {
+                  return;
+                }
+                setState(() {
+                  _workerCount = value;
+                });
+              },
             ),
             if (_isEditing)
               Padding(
@@ -708,7 +797,12 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
       return;
     }
     Navigator.of(context).pop(
-      _TaskDraftResult(name: name, sourceDir: sourceDir, targetDir: targetDir),
+      _TaskDraftResult(
+        name: name,
+        sourceDir: sourceDir,
+        targetDir: targetDir,
+        workerCount: _workerCount,
+      ),
     );
   }
 }
@@ -854,11 +948,13 @@ class _TaskDraftResult {
     required this.name,
     required this.sourceDir,
     required this.targetDir,
+    required this.workerCount,
   });
 
   final String name;
   final String sourceDir;
   final String targetDir;
+  final int workerCount;
 }
 
 BoxDecoration _panelDecoration() {

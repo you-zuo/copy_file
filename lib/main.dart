@@ -48,7 +48,7 @@ Future<void> main() async {
   final engine = CopyEngineClient(
     databasePath:
         '${appSupportDirectory.path}${Platform.pathSeparator}copy_file.db',
-    workerCount: 2,
+    workerCount: 4,
   );
   await engine.initialize();
   final viewModel = TaskListViewModel(
