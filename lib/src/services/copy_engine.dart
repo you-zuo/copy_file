@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
@@ -331,7 +332,7 @@ class CopyEngine {
           }
 
           final size = min(copyChunkSize, entry.size - offset);
-          final buffer = await sourceHandle.read(size);
+          final buffer = await _readExactly(sourceHandle, size);
           if (buffer.length != size) {
             throw Exception('读取源文件失败: ${entry.relativePath}');
           }
@@ -409,7 +410,7 @@ class CopyEngine {
         }
 
         await handle.setPosition(index * copyChunkSize);
-        final bytes = await handle.read(chunk.chunkSize);
+        final bytes = await _readExactly(handle, chunk.chunkSize);
         if (bytes.length != chunk.chunkSize) {
           break;
         }
@@ -448,6 +449,25 @@ class CopyEngine {
     }
 
     return verifiedOffset;
+  }
+
+  Future<Uint8List> _readExactly(RandomAccessFile handle, int size) async {
+    if (size <= 0) {
+      return Uint8List(0);
+    }
+
+    // External disks and network filesystems may short-read large requests.
+    final builder = BytesBuilder(copy: false);
+    var remaining = size;
+    while (remaining > 0) {
+      final chunk = await handle.read(remaining);
+      if (chunk.isEmpty) {
+        break;
+      }
+      builder.add(chunk);
+      remaining -= chunk.length;
+    }
+    return builder.takeBytes();
   }
 }
 

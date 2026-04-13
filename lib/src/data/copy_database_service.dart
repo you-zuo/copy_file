@@ -100,4 +100,15 @@ class CopyDatabaseService {
     );
     return _database!;
   }
+
+  Future<void> close() async {
+    final database = _database;
+    if (database == null || !database.isOpen) {
+      _database = null;
+      return;
+    }
+
+    await database.close();
+    _database = null;
+  }
 }

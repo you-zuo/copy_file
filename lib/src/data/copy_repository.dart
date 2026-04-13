@@ -835,6 +835,7 @@ class CopyRepository {
 
   Future<void> dispose() async {
     await _changes.close();
+    await _databaseService.close();
   }
 
   void _notify(int? taskId) {
