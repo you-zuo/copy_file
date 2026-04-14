@@ -502,7 +502,7 @@ class _TaskDetailPanel extends StatelessWidget {
                       border: OutlineInputBorder(),
                     ),
                     items: List<DropdownMenuItem<int>>.generate(
-                      8,
+                      16,
                       (index) => DropdownMenuItem<int>(
                         value: index + 1,
                         child: Text('${index + 1}'),
@@ -733,7 +733,7 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
               initialValue: _workerCount,
               decoration: const InputDecoration(labelText: '任务并发数'),
               items: List<DropdownMenuItem<int>>.generate(
-                8,
+                16,
                 (index) => DropdownMenuItem<int>(
                   value: index + 1,
                   child: Text('${index + 1}'),
