@@ -17,6 +17,7 @@ class CopyEngine {
 
   final CopyRepository _repository;
   final Map<int, _TaskControl> _controls = <int, _TaskControl>{};
+  final Map<int, Set<String>> _createdTargetDirectories = <int, Set<String>>{};
 
   bool get hasActiveTasks => _controls.isNotEmpty;
 
@@ -131,6 +132,7 @@ class CopyEngine {
       await _repository.markTaskFailed(taskId, error.toString());
     } finally {
       _controls.remove(taskId);
+      _createdTargetDirectories.remove(taskId);
       control.completer.complete();
     }
   }
@@ -149,22 +151,40 @@ class CopyEngine {
   }
 
   Future<void> _runCopyWorker(int taskId, _TaskControl control) async {
-    while (!control.pauseRequested && control.fatalError == null) {
-      final currentTask = await _repository.getTask(taskId);
-      if (currentTask == null) {
-        return;
-      }
+    final claimedEntries = <CopyEntry>[];
+    try {
+      while (!control.pauseRequested && control.fatalError == null) {
+        final currentTask = await _repository.getTask(taskId);
+        if (currentTask == null) {
+          return;
+        }
 
-      final entry = await _repository.claimNextPendingEntry(taskId);
-      if (entry == null) {
-        return;
-      }
+        if (claimedEntries.isEmpty) {
+          claimedEntries.addAll(
+            await _repository.claimPendingEntries(
+              taskId,
+              limit: copyClaimBatchSize,
+            ),
+          );
+          if (claimedEntries.isEmpty) {
+            return;
+          }
+        }
 
-      try {
-        await _copyEntry(currentTask, entry, control);
-      } catch (error) {
-        control.fatalError ??= error;
-        return;
+        final entry = claimedEntries.removeAt(0);
+        try {
+          await _copyEntry(currentTask, entry, control);
+        } catch (error) {
+          control.fatalError ??= error;
+          return;
+        }
+      }
+    } finally {
+      if (claimedEntries.isNotEmpty) {
+        await _repository.releaseClaimedEntries(
+          taskId,
+          claimedEntries.map((entry) => entry.id).toList(growable: false),
+        );
       }
     }
   }
@@ -306,7 +326,7 @@ class CopyEngine {
       throw Exception('源文件已变化: ${entry.relativePath}');
     }
 
-    await targetFile.parent.create(recursive: true);
+    await _ensureTargetDirectory(task.id, targetFile.parent.path);
     final digestSink = _DigestAccumulatorSink();
     final digestInput = md5.startChunkedConversion(digestSink);
     var digestClosed = false;
@@ -327,7 +347,16 @@ class CopyEngine {
       digestInput: digestInput,
     );
 
-    if (resumeOffset < entry.size) {
+    if (entry.size <= singlePassCopyThreshold) {
+      await _copyEntrySinglePass(
+        task: task,
+        entry: entry,
+        sourceFile: sourceFile,
+        targetFile: targetFile,
+        digestInput: digestInput,
+        control: control,
+      );
+    } else if (resumeOffset < entry.size) {
       final sourceHandle = await sourceFile.open(mode: FileMode.read);
       final targetHandle = await targetFile.open(
         mode: FileMode.writeOnlyAppend,
@@ -351,7 +380,6 @@ class CopyEngine {
 
           digestInput.add(buffer);
           await targetHandle.writeFrom(buffer);
-          await targetHandle.flush();
 
           offset += buffer.length;
           await _repository.commitChunk(
@@ -385,6 +413,31 @@ class CopyEngine {
     );
   }
 
+  Future<void> _copyEntrySinglePass({
+    required CopyTask task,
+    required CopyEntry entry,
+    required File sourceFile,
+    required File targetFile,
+    required ByteConversionSink digestInput,
+    required _TaskControl control,
+  }) async {
+    if (control.pauseRequested || control.fatalError != null) {
+      return;
+    }
+
+    final bytes = await sourceFile.readAsBytes();
+    if (bytes.length != entry.size) {
+      throw Exception('读取源文件失败: ${entry.relativePath}');
+    }
+
+    if (control.pauseRequested || control.fatalError != null) {
+      return;
+    }
+
+    digestInput.add(bytes);
+    await targetFile.writeAsBytes(bytes, mode: FileMode.write);
+  }
+
   Future<int> _prepareDestination({
     required CopyTask task,
     required CopyEntry entry,
@@ -392,6 +445,17 @@ class CopyEngine {
     required File targetFile,
     required ByteConversionSink digestInput,
   }) async {
+    if (entry.size <= singlePassCopyThreshold) {
+      if (entry.bytesCopied > 0) {
+        await _repository.rewindEntryProgress(
+          taskId: task.id,
+          entryId: entry.id,
+          verifiedBytes: 0,
+        );
+      }
+      return 0;
+    }
+
     final chunks = await _repository.listChunks(entry.id);
     final chunkMap = <int, CopyChunk>{
       for (final chunk in chunks) chunk.chunkIndex: chunk,
@@ -461,6 +525,17 @@ class CopyEngine {
     }
 
     return verifiedOffset;
+  }
+
+  Future<void> _ensureTargetDirectory(int taskId, String path) async {
+    final cachedDirectories = _createdTargetDirectories.putIfAbsent(
+      taskId,
+      () => <String>{},
+    );
+    if (!cachedDirectories.add(path)) {
+      return;
+    }
+    await Directory(path).create(recursive: true);
   }
 
   Future<Uint8List> _readExactly(RandomAccessFile handle, int size) async {

@@ -52,6 +52,102 @@ void main() {
     }
   });
 
+  test(
+    'CopyEngine copies small files without persisting chunk metadata',
+    () async {
+      final harness = await _CopyEngineHarness.create();
+      try {
+        final sourceFile = File(p.join(harness.sourceDir.path, 'clip.bin'));
+        await _writePatternFile(sourceFile, singlePassCopyThreshold);
+
+        final taskId = await harness.repository.createTask(
+          name: 'small copy',
+          sourceDir: harness.sourceDir.path,
+          targetDir: harness.targetDir.path,
+          workerCount: 1,
+        );
+
+        await harness.engine.startTask(
+          taskId,
+          verifyCompletedEntriesOnStart: false,
+        );
+
+        final entry = (await harness.repository.listEntries(taskId)).single;
+        final targetFile = File(p.join(harness.targetDir.path, 'clip.bin'));
+
+        expect(entry.status, CopyEntryStatus.completed);
+        expect(await harness.repository.listChunks(entry.id), isEmpty);
+        expect(await targetFile.length(), await sourceFile.length());
+        expect(await _hashFile(targetFile), await _hashFile(sourceFile));
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
+
+  test(
+    'CopyEngine recopies small files from scratch when stale progress exists',
+    () async {
+      final harness = await _CopyEngineHarness.create();
+      try {
+        final relativePath = 'clip.bin';
+        final sourceFile = File(p.join(harness.sourceDir.path, relativePath));
+        await _writePatternFile(sourceFile, singlePassCopyThreshold ~/ 2);
+        final stat = await sourceFile.stat();
+
+        final taskId = await harness.repository.createTask(
+          name: 'small recopy',
+          sourceDir: harness.sourceDir.path,
+          targetDir: harness.targetDir.path,
+          workerCount: 1,
+        );
+
+        await harness.repository.prepareTaskForScan(taskId);
+        await harness.repository
+            .insertScannedEntries(taskId, <ScannedEntryDraft>[
+              ScannedEntryDraft(
+                relativePath: relativePath,
+                size: stat.size,
+                modifiedMs: stat.modified.millisecondsSinceEpoch,
+              ),
+            ]);
+        await harness.repository.finishTaskScan(taskId);
+
+        final entry = (await harness.repository.listEntries(taskId)).single;
+        final targetFile = File(p.join(harness.targetDir.path, relativePath));
+        await targetFile.parent.create(recursive: true);
+
+        final partialLength = stat.size ~/ 2;
+        final partialBytes = await _readRange(sourceFile, partialLength);
+        await targetFile.writeAsBytes(partialBytes, flush: true);
+        await harness.repository.commitChunk(
+          taskId: taskId,
+          entryId: entry.id,
+          chunkIndex: 0,
+          chunkSize: partialBytes.length,
+          md5: md5.convert(partialBytes).toString(),
+          newBytesCopied: partialBytes.length,
+        );
+
+        await harness.engine.startTask(
+          taskId,
+          verifyCompletedEntriesOnStart: false,
+        );
+
+        final resumedEntry = (await harness.repository.listEntries(
+          taskId,
+        )).single;
+
+        expect(resumedEntry.status, CopyEntryStatus.completed);
+        expect(await harness.repository.listChunks(entry.id), isEmpty);
+        expect(await targetFile.length(), await sourceFile.length());
+        expect(await _hashFile(targetFile), await _hashFile(sourceFile));
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
+
   test('CopyEngine resumes large files from verified chunk progress', () async {
     final harness = await _CopyEngineHarness.create();
     try {
@@ -274,6 +370,83 @@ void main() {
           (await harness.repository.getTask(taskId))?.verifyCompletedOnResume,
           isTrue,
         );
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
+
+  test(
+    'repository updates task metrics incrementally for complete and fail',
+    () async {
+      final harness = await _CopyEngineHarness.create();
+      try {
+        final taskId = await harness.repository.createTask(
+          name: 'incremental metrics',
+          sourceDir: harness.sourceDir.path,
+          targetDir: harness.targetDir.path,
+          workerCount: 1,
+        );
+
+        await harness.repository.prepareTaskForScan(taskId);
+        await harness.repository
+            .insertScannedEntries(taskId, <ScannedEntryDraft>[
+              const ScannedEntryDraft(
+                relativePath: 'a.bin',
+                size: 3,
+                modifiedMs: 1,
+              ),
+              const ScannedEntryDraft(
+                relativePath: 'b.bin',
+                size: 5,
+                modifiedMs: 1,
+              ),
+            ]);
+        await harness.repository.finishTaskScan(taskId);
+
+        final entries = await harness.repository.listEntries(taskId);
+        final firstEntry = entries.firstWhere(
+          (entry) => entry.relativePath == 'a.bin',
+        );
+        final secondEntry = entries.firstWhere(
+          (entry) => entry.relativePath == 'b.bin',
+        );
+
+        await harness.repository.commitChunk(
+          taskId: taskId,
+          entryId: firstEntry.id,
+          chunkIndex: 0,
+          chunkSize: 2,
+          md5: md5.convert(const <int>[1, 2]).toString(),
+          newBytesCopied: 2,
+        );
+
+        var task = await harness.repository.getTask(taskId);
+        expect(task?.copiedBytes, 2);
+        expect(task?.completedFiles, 0);
+        expect(task?.failedFiles, 0);
+
+        await harness.repository.completeEntry(
+          taskId: taskId,
+          entryId: firstEntry.id,
+          sourceMd5: 'done',
+        );
+
+        task = await harness.repository.getTask(taskId);
+        expect(task?.copiedBytes, 3);
+        expect(task?.completedFiles, 1);
+        expect(task?.failedFiles, 0);
+
+        await harness.repository.failEntry(
+          taskId: taskId,
+          entryId: secondEntry.id,
+          error: 'boom',
+        );
+
+        task = await harness.repository.getTask(taskId);
+        expect(task?.copiedBytes, 3);
+        expect(task?.completedFiles, 1);
+        expect(task?.failedFiles, 1);
       } finally {
         await harness.dispose();
       }

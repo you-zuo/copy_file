@@ -506,9 +506,16 @@ class CopyRepository {
     return count == 0;
   }
 
-  Future<CopyEntry?> claimNextPendingEntry(int taskId) async {
+  Future<List<CopyEntry>> claimPendingEntries(
+    int taskId, {
+    int limit = 1,
+  }) async {
+    if (limit <= 0) {
+      return const <CopyEntry>[];
+    }
+
     final db = await _db;
-    CopyEntry? claimedEntry;
+    final claimedEntries = <CopyEntry>[];
 
     await db.transaction((txn) async {
       final rows = await txn.query(
@@ -516,15 +523,16 @@ class CopyRepository {
         where: 'task_id = ? AND status = ?',
         whereArgs: [taskId, CopyEntryStatus.pending.name],
         orderBy: 'id ASC',
-        limit: 1,
+        limit: limit,
       );
       if (rows.isEmpty) {
         return;
       }
 
       final now = DateTime.now().millisecondsSinceEpoch;
-      final row = Map<String, Object?>.from(rows.first);
-      final entryId = row['id']! as int;
+      final entryIds = rows
+          .map((row) => row['id']! as int)
+          .toList(growable: false);
       await txn.update(
         'copy_entries',
         {
@@ -532,20 +540,51 @@ class CopyRepository {
           'error': null,
           'updated_at': now,
         },
-        where: 'id = ? AND task_id = ?',
-        whereArgs: [entryId, taskId],
+        where:
+            'task_id = ? AND id IN (${List.filled(entryIds.length, '?').join(',')})',
+        whereArgs: [taskId, ...entryIds],
       );
 
-      row['status'] = CopyEntryStatus.copying.name;
-      row['error'] = null;
-      row['updated_at'] = now;
-      claimedEntry = CopyEntry.fromMap(row);
+      for (final sourceRow in rows) {
+        final row = Map<String, Object?>.from(sourceRow);
+        row['status'] = CopyEntryStatus.copying.name;
+        row['error'] = null;
+        row['updated_at'] = now;
+        claimedEntries.add(CopyEntry.fromMap(row));
+      }
     });
 
-    if (claimedEntry != null) {
+    if (claimedEntries.isNotEmpty) {
       _notify(taskId);
     }
-    return claimedEntry;
+    return claimedEntries;
+  }
+
+  Future<CopyEntry?> claimNextPendingEntry(int taskId) async {
+    final claimedEntries = await claimPendingEntries(taskId);
+    if (claimedEntries.isEmpty) {
+      return null;
+    }
+    return claimedEntries.first;
+  }
+
+  Future<void> releaseClaimedEntries(int taskId, List<int> entryIds) async {
+    if (entryIds.isEmpty) {
+      return;
+    }
+
+    final db = await _db;
+    await db.update(
+      'copy_entries',
+      {
+        'status': CopyEntryStatus.pending.name,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      where:
+          'task_id = ? AND status = ? AND id IN (${List.filled(entryIds.length, '?').join(',')})',
+      whereArgs: [taskId, CopyEntryStatus.copying.name, ...entryIds],
+    );
+    _notify(taskId);
   }
 
   Future<List<CopyEntry>> listCompletedEntriesAfter(
@@ -788,7 +827,7 @@ class CopyRepository {
     await db.transaction((txn) async {
       final rows = await txn.query(
         'copy_entries',
-        columns: ['size', 'bytes_copied'],
+        columns: ['size', 'bytes_copied', 'status'],
         where: 'id = ? AND task_id = ?',
         whereArgs: [entryId, taskId],
         limit: 1,
@@ -798,7 +837,14 @@ class CopyRepository {
       }
       final size = rows.first['size']! as int;
       final bytesCopied = rows.first['bytes_copied']! as int;
+      final previousStatus = copyEntryStatusFromDb(
+        rows.first['status']! as String,
+      );
       final delta = size - bytesCopied;
+      final completedDelta = previousStatus == CopyEntryStatus.completed
+          ? 0
+          : 1;
+      final failedDelta = previousStatus == CopyEntryStatus.failed ? -1 : 0;
       await txn.update(
         'copy_entries',
         {
@@ -811,15 +857,17 @@ class CopyRepository {
         where: 'id = ? AND task_id = ?',
         whereArgs: [entryId, taskId],
       );
-      if (delta != 0) {
+      if (delta != 0 || completedDelta != 0 || failedDelta != 0) {
         await txn.rawUpdate(
           '''
           UPDATE copy_tasks
           SET copied_bytes = copied_bytes + ?,
+              completed_files = MAX(completed_files + ?, 0),
+              failed_files = MAX(failed_files + ?, 0),
               updated_at = ?
           WHERE id = ?
           ''',
-          [delta, now, taskId],
+          [delta, completedDelta, failedDelta, now, taskId],
         );
       } else {
         await txn.update(
@@ -830,7 +878,7 @@ class CopyRepository {
         );
       }
     });
-    await recalculateTaskMetrics(taskId);
+    _notify(taskId);
   }
 
   Future<void> failEntry({
@@ -840,17 +888,58 @@ class CopyRepository {
   }) async {
     final db = await _db;
     final now = DateTime.now().millisecondsSinceEpoch;
-    await db.update(
-      'copy_entries',
-      {
-        'status': CopyEntryStatus.failed.name,
-        'error': error,
-        'updated_at': now,
-      },
-      where: 'id = ? AND task_id = ?',
-      whereArgs: [entryId, taskId],
-    );
-    await recalculateTaskMetrics(taskId);
+    await db.transaction((txn) async {
+      final rows = await txn.query(
+        'copy_entries',
+        columns: ['status'],
+        where: 'id = ? AND task_id = ?',
+        whereArgs: [entryId, taskId],
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        return;
+      }
+
+      final previousStatus = copyEntryStatusFromDb(
+        rows.first['status']! as String,
+      );
+      final completedDelta = previousStatus == CopyEntryStatus.completed
+          ? -1
+          : 0;
+      final failedDelta = previousStatus == CopyEntryStatus.failed ? 0 : 1;
+
+      await txn.update(
+        'copy_entries',
+        {
+          'status': CopyEntryStatus.failed.name,
+          'error': error,
+          'updated_at': now,
+        },
+        where: 'id = ? AND task_id = ?',
+        whereArgs: [entryId, taskId],
+      );
+
+      if (completedDelta != 0 || failedDelta != 0) {
+        await txn.rawUpdate(
+          '''
+          UPDATE copy_tasks
+          SET completed_files = MAX(completed_files + ?, 0),
+              failed_files = MAX(failed_files + ?, 0),
+              updated_at = ?
+          WHERE id = ?
+          ''',
+          [completedDelta, failedDelta, now, taskId],
+        );
+      } else {
+        await txn.update(
+          'copy_tasks',
+          {'updated_at': now},
+          where: 'id = ?',
+          whereArgs: [taskId],
+        );
+      }
+    });
+    _notify(taskId);
   }
 
   Future<void> recalculateTaskMetrics(int taskId) async {
